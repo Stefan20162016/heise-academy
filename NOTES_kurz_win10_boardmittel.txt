@@ -1,0 +1,242 @@
+==== Notizen zum Kurs Windows 10 mit Boardmitteln absichern ====
+
+https://app.heise-academy.de/videokurse/windows-10-11-mit-bordmitteln-absichern-2x6a9e/run
+
+- Kap 2 - 12: whoami /groups /fo csv | ConvertFrom-Csv 
+- Kap 2 - 18 Kennwort group policy mit hoeherer Prioritaet auf oberster Ebene: unterhalb "domainname.de" funktioniert, aber besser:
+- Kap 2 - 18: Kennwortrichtlinie nur in "Default Domain Policy" setzen, da Ruecksynchroniserung von Aenderung direkt am Domaenen Objekt "domainname.de"
+- Kap 2 - 19: Active Directory Administrative Center: -> System -> Password Settings Container
+- Kap 2 - 20: ds.msc: domain right click -> delegate control -> reset Password
+	
+	# test reset pw delegation:
+	Set-ADAccountPassword -Identity $user -Reset -NewPassword (ConvertTo-SecureString -AsPlainText "$newPass" -Force)
+  !! this will be overwritten for admin objects in AD by copying Security-Properties from AdminSDHolder to admin account objects
+
+- Kap 2 - 20: AD Administrative Center: system -> AdminSDHolder -> add user "lowpriv" -> select 'descendant user objects' -> grant "write lockoutTime"
+- pwsh: "Search-ADAccount -LockedOut | Unlock-ADAccount"
+
+Set-ADAccountPassword -Identity "testroot2" -Reset -NewPassword (ConvertTo-SecureString -AsPlainText "XXXX" -Force)
+
+- Kap 3 - 26: for remote Event Viewer: pwsh: "Enter-PsSession" -Credentials "Set-NetFirewallProfile -Enabled false -All"
+				or enable 3 "Remote Eventlog ManagementXYZ" rules in windows defender firewall
+
+- K3-27: specops-Pass-Auditor: Import-Csv -Path c:\PwList\user.csv -Delimiter ";" |
+ ForEach-Object { Set-ADUser -Identity $_.samAccountName -PasswordNeverExpires $false -ChangePasswordAtLogon $true }
+ 
+- K4 43: - check: Bitlocker Schluessel Wiederherstellung:	Get-ADObject -SearchBase (Get-ADRootDSE).SchemaNamingContext) -Filter {Name -like 'ms-FVE-*'}
+	     - GP-computer-admx: winComp->Bitlocker Drive Encryption: Store Bitlocker recovert info in AD DS: enable
+		 - Operating System Drives -> Choose how bitlocker protected os drives can be recovered -> save in AD DS
+		 - bitlocker schon aktiv: schluessel in AD manuell hochladen:
+		   1. "manage-bde -protrectors -get c:" 2."manage-bde -protectors -adbackup c: -id "{a-b-c-d-e}""
+    oder: $volkey = Get-BitLockerVolume -MountPoint c: ` Backup-BitLockerKeyProtector -MountPoint "C:" -KeyProtectorId $volkey[1]
+
+- K4 45: -GP Microsoft Defender Antivirus -> Security Intelligence Updates-> "define ..out-of-date-": 1 day
+		 - "turn on scan after security intelligence update"
+		 - "initiate update on startup"
+		 - "specify the intervall": 1 hour
+		 - "check for latest ... update on startup"
+		 - disable every "local override"
+ 
+- K5 49: copy c:\windows\PolicyDefinitions to c:\windows\SYSVOL\sysvol\harinko.de\Policies
+		=> group policy editor will use ADMX files from "central store"
+		- administrative templates updates for Win10 21H2, etc on -microsoft website
+- K5 50: group policy: "removeable storage access" and "device installation\restrictions"
+- K5 51: gp-> user policy-> admx -> system -> "prevent access to the command prompt/scripts" [note: cmd.exe checks this setting and quits]
+							                  "regedit access" 
+											  "block programs started via File Explorer"
+- K5 52: system-> windows powershell -> 
+		PS1: Get-ExceutionPolicy -List
+		start new powershell session: powershell.exe -executionpolicy unrestricted
+
+- K5 53: Powershell signing: view certs with certmgr.msc
+	$cert = New-SelfSignedCertificate -Subject CodeSigning -Type CodeSigningCert -CertStoreLocation Cert:\CurrentUser\My
+	Set-AuthenticodeSignature -Certificate $cert -FilePath c:\Users\f1l1\Desktop\demo.ps1
+	$cert | Export-Certificate -Type CERT -FilePath c:\Users\f1l1\Desktop\codecert.crt
+	
+	-> import with certmgr.msc -> actions -> import -> "alle zert in folgendem Speicher speichern"-> "Vetrauenswuerdige Stammzerts"
+
+- K6 57/58: Microsoft Security Compliance Toolkit: impo baselines -> compare -> show only differences/conflicts
+	 59: - baseline lokal testen mit LGPO.exe /g <PFAD to baselineTOIMPORT>
+		 - im policy analyzer nochmal die baselineTOIMPORT mit akteuller konfig vergleichen; okay dann noch alle anwendungen starten/testen, dass nicht sicherheitsoptionen dazwischenfunken
+		 - im GPMC neues GPO mit Name: baselineTOIMPORT
+		 - rechtsclick: "Einstellungen importieren" -> baseline-gpo -> 
+
+- K7 64:- Applocker in gp -> comp-> windows settings -> security settings -> application control policies-> AppLocker
+		- executable rules -> rclick -> create default rules
+		- new rule deny "IEXPLORER.EXE"
+		- activate applocker service !!!: windows settings -> system services -> application identity: automatic
+		- startmenu ist eine Windows App und ist geblockt, wie auch Windows Store
+		- "packaged app Rules" -> rclick -> create default Rules
+		- scripts -> blocks .bat files restricts powershell to $ExecutionContext.SessionState.LanguageMode == ContrainedLanguage
+	 67:- Eigenschaften von AppLocker Group Policy -> Konfigurieren -> "erzwingen" bedeutet andere in der GP Hierarchie ueberschreiben oder "audit only"	
+	    - im eventlog: Get-WinEvent -LogName "Microsoft-Windows-AppLocker/EXE and DLL"
+		- (Get-AppLockerPolicy -Effective).RuleCollections | Select-Object -Property RuleCollectiontype, Enforcementmode -> Enforcement-Konfiguerierung erzwungen
+		
+		(find writeable dirs in c:\windows and c:\programme* 
+		$AllFolders=(Get-ChildItem -Path $env:SystemRoot -Directory -Recurse -Force | where {$_.FullName -notlike '*winsxs*'}).FullName
+		foreach ($Folder in $AllFolders) { cmd /c echo  > $Folder\ICANWRITEHERE4711.txt }
+		(Get-ChildItem -Path $env:SystemRoot -Recurse -Filter ICANWRITEHERE4711.txt).Fullname | Out-File $env:File_ICANWRITEHERE_Found.txt
+	    )
+		
+	 69: - Windows Defender  Application Control: WDAC
+        - WDAC Policy Wizard: wrapping WDAC CI(code integrity) PowerShell cmdlets	 
+		- DeviceGuard.ps1:
+		$InitialCIPolicy="C:\Users\root\Desktop\InitialScan.xml"
+		$CIPolicyBin="C:\Users\root\Desktop\DeviceGuardPolicy.bin"
+		New-CIPolicy -Level PcaCertificate -FilePath $InitialCIPolicy -UserPEs 3> CIPolicy
+		ConvertFrom-CIPolicy $InitialCIPolicy $CIPolicyBin
+		# copy .bin file as "SIPolicy.p7b" in "c:\windows\system32\CodeIntegrity"
+		
+		- .exe Anwendungen manuell zur Policy hinzufuegen:
+		$CIAuditPolicy="C:\Users\root\Desktop\DeviceGuardAuditPolicy.xml"
+		New-CIPolicy -Audit -Level Hash -FilePath $CIAuditPolicy -UserPEs 3> ("c:\Users\root\Desktop\CI-Merge-log.txt")
+		$merged="C:\Users\root\Desktop\Merged.xml"
+		Merge-CIPolicy -PolicyPaths $InitialCIPolicy, $CIAuditPolicy -OutputFilePath $merged
+		ConvertFrom-CIPolicy $merged $CIPolicyBin
+		
+		- Enforce: via Set-RuleOption -help
+		Set-RuleOption -FilePath <path> -Option 9 and 10
+		Set-RuleOption -FilePath EnforcedCIPolicy.xml -Option 3 -Delete
+	
+		(siehe: https://harwee.de/2016/12/19/windows-10-device-guard-code-integrity/)
+	
+		- RefreshPolicy.exe https://www.microsoft.com/en-us/download/details.aspx?id=102925
+		
+		https://github.com/MicrosoftDocs/windows-itpro-docs/blob/public/windows/security/threat-protection/windows-defender-application-control/merge-windows-defender-application-control-policies.md
+		
+	
+	=== https://techcommunity.microsoft.com/t5/core-infrastructure-and-security/deploying-windows-10-application-control-policy/ba-p/2486267 ===
+	=== see comments at the end ===
+	
+	Use New-CIPolicy to generate a new WDAC policy from logged audit events. This example uses a FilePublisher file rule level and a Hash fallback level. Warning messages are redirected to a text file EventsPolicyWarnings.txt.PowerShell
+	> New-CIPolicy -FilePath $EventsPolicy -Audit -Level FilePublisher -Fallback Hash –UserPEs -Mul
+	
+	===
+	 managed installer setup: https://github.com/MicrosoftDocs/windows-itpro-docs/blob/public/windows/security/threat-protection/windows-defender-application-control/configure-authorized-apps-deployed-with-a-managed-installer.md
+	====
+	
+	 70: -Policy Wizard hat vorlagen/gespeicherte Signatur Profile: "Default windows mode, allow ms mode, FILES WITH GOOD Reputation (cloudservice)"
+	     - options: "managed installer" e.g. was Softwareverteilungs-Account installiert wird automatisch vetraut
+		 
+- K 8 76 - Windows Defender Application Guard (install win10 feature) 
+		(unter hyper-v: Set-VMProcessor -VMName <VMName> -ExposeVirtualizationExtensions $true)
+	- Edge (rightclick neues app guard fenster) und MS365 apps		 
+    - group policy: ... Komponente -> Microsoft Defender Application Guard -> Zwischenablage, Persistenz, Downloads
+	- "verwalteter Modus aktivieren" ist fuer MS365 apps
+	  
+	Go to the Computer Configuration\Administrative Templates\Windows Components\Microsoft Defender Application Guard\Turn on Microsoft Defender Application Guard in Managed Mode setting  
+	- admx -> Netzwerk -> Netzwerkisolation -> Adressbereichdes privaten Netz fuer Apps festlegen !!!
+	Dann startet Edge App Guard Fenster fuer alle ausserhalb des lokalen Netzes
+		 
+	77 - Windows Sandbox: install windows feature with: appwiz.cpl 
+	runs as the "wdagutilityaccount"
+	- drag and drop files into it
+	- dlls, etc share same pages, improved scheduler
+	- sandboxdemo.wsb XML-Template Datei: https://docs.microsoft.com/en-us/windows/security/threat-protection/windows-sandbox/windows-sandbox-configure-using-wsb-file#:~:text=Windows%20Sandbox%20configuration%20files%20are%20formatted%20as%20XML,%28virtualized%20GPU%29%3A%20Enable%20or%20disable%20the%20virtualized%20GPU.?msclkid=fe7826ceb04011ec9feace051943ebf9
+		
+==== sandbox.wsb ====
+<Configuration>
+	<VGpu>Enable</VGpu>
+	<Networking>Enable</Networking>
+	<MappedFolders>
+		<MappedFolder>
+			<HostFolder>c:\Sandbox</HostFolder>
+			<SandboxFolder>C:\Users\WDAGUtilityAccount\Downloads</SandboxFolder>
+			<ReadOnly>false</ReadOnly>
+		</MappedFolder>
+	</MappedFolders>
+	<LogonCommand>
+		<Command>explorer.exe</Command>
+	</LogonCommand>
+</Configuration>
+=====================
+		 
+	K9 - LAPS: install .msi: 
+	   - Powershell module (get-command -module admpwd.ps)
+	   - Update-ADmPwdADSchema:
+AddSchemaAttribute   cn=ms-Mcs-AdmPwdExpirationTime,CN=Schema,CN=Configuration,DC=h... Success
+AddSchemaAttribute   cn=ms-Mcs-AdmPwd,CN=Schema,CN=Configuration,DC=harinko,DC=de      Success
+ModifySchemaClass    cn=computer,CN=Schema,CN=Configuration,DC=harinko,DC=de           Success
+
+	- Permssion for computer account to save PW:
+	Set-AdmPwdComputerSelfPermission -Identity "OU=OU for LAPS Computers,DC=harinko,DC=de"
+	
+	- fuer Gruppe Read PW Permission: Set-AdmPwdReadPasswordPermission -Identity ... -AllowedPrinicalps <domain\groupname>
+	- hinterher local AdminPW zueruecksetzen: Set-AdmPwdResetPasswordPermission  !! Achtung nicht, dass auch lokale Server-Administrator Accounts zuerueckgesetzt werden koennen
+	- admx - LAPS - Enable local admin password management: enable + do not allow password expiration longer: enable
+	
+	- Verteilen der LAPS.msi per GP: mit Richtlinien-Softwareeinstellungen-Softwareinstallation - neues Paket auf versteckter \\server\Freigabe$ (mit Berechtigungs-Vererbung deaktiviert: \Domain Computers read zugriff, administrators: full control)
+	- Wartung auf installation bei Anmeldung:  admx-system-logon-always wait for the network...: enabled
+			
+	Convert Password Expire Date : w32tm /ntte $number-you-want-to-convert
+	
+	from LAPS_TechnicalSpecification.docx:
+	- Eventlog Logging: You can enable additional logging by creating a new REG_DWORD value named ExtensionDebugLevel in the Registry in HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon\GPExtensions\{D76B9641-3288-4f75-942D-087DE603E3EA}\ . Set it to 0 (the default) to log errors only, 1 to log errors and warnings, and 2 for verbose logging.
+	-creation of custom admin account on installation: msiexec /q /i <path>\LAPS.<platform>.msi CUSTOMADMINNAME=<name of custom local admin account>
+	
+	Get-ADComputer -Filter * -SearchBase “DC=harinko,DC=de” | Get-AdmPwdPassword -ComputerName {$_.Name}
+	Get-ADComputer -Filter * -SearchBase “DC=harinko,DC=de” | Reset-AdmPwdPassword -ComputerName {$_.Name}
+	
+	links:
+	
+	https://docs.microsoft.com/en-us/windows/win32/adschema/extended-rights
+	
+	https://4sysops.com/archives/part-2-faqs-for-microsoft-local-administrator-password-solution-laps/
+	http://woshub.com/manage-local-administrator-passwords-with-laps/
+    https://www.msxfaq.de/windows/endpointsecurity/laps.htm
+	https://4sysops.com/archives/part-2-faqs-for-microsoft-local-administrator-password-solution-laps/
+	
+	88: "Virtualisierungsbasierte Sicherheit" unter admx - System - DeviceGuard - turn on virt based sec
+	
+	for hyper-v: Set-VMProcessor -VMName <VMName> -ExposeVirtualizationExtensions $true
+	
+	(https://docs.microsoft.com/en-us/windows/security/threat-protection/device-guard/enable-virtualization-based-protection-of-code-integrity)
+	elevated: Get-CimInstance –ClassName Win32_DeviceGuard –Namespace root\Microsoft\Windows\DeviceGuard
+	
+	
+	
+	
+- more links:
+
+AD in general: https://ldapwiki.com/wiki/Security%20Descriptor
+https://docs.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/best-practices-for-securing-active-directory
+
+Windows Defender Credential Guard protection limits and mitigations  And something with certs:
+https://docs.microsoft.com/en-us/windows/security/identity-protection/credential-guard/credential-guard-not-protected-scenarios
+
+
+separate admin accounts:
+http://woshub.com/add-domain-users-local-admin-group-gpo/
+
+woshub:
+https://twitter.com/woshub
+http://woshub.com/temporary-membership-in-active-directory-groups/
+http://woshub.com/securing-administrative-priveleged-accounts-active-directory/
+http://woshub.com/restore-deleted-active-directory-objects-users/	
+http://woshub.com/manage-group-policy-objects-powershell/	
+http://woshub.com/how-to-refresh-ad-groups-membership-without-user-logoff/
+
+https://www.youtube.com/c/CloudManagementCommunity/videos
+
+https://4sysops.com/archives/windows-security-event-log-backup-to-sql-server-express-with-powershell/
+
+ # code signing:
+ https://web.archive.org/web/20150206074011/http://blogs.msdn.com/b/ieinternals/archive/2015/01/28/authenticode-in-2015-signcode-with-certificate-on-etoken.aspx
+ 
+ https://exploitmonday.blogspot.com/2017/08/application-of-authenticode-signatures.html
+
+secure local admin accounts on server and workstations:
+	https://docs.microsoft.com/en-us/windows-server/identity/ad-ds/plan/security-best-practices/appendix-d--securing-built-in-administrator-accounts-in-active-directory
+
+	
+#	NOTES ______________________
+# allow normal user to use Invoke-Command on Server:
+#Set-PSSessionConfiguration Microsoft.PowerShell -ShowSecurityDescriptorUI
+________________________________
+
+
+0Drt,0Q&{E.w29; 
+
+
+
+
